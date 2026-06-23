@@ -194,11 +194,15 @@ app.post('/api/auth/refresh', async (req, res) => {
     }
 });
 
-// Export JWT_SECRET for use by other services
-app.get('/api/auth/config', (req, res) => {
-    // Only return config to internal services (add IP whitelist in production)
-    res.json({ jwtSecret: JWT_SECRET });
-});
+// NOTE: The /api/auth/config endpoint that returned JWT_SECRET was removed —
+// it leaked the signing secret to any caller. Services receive JWT_SECRET via
+// their own environment (must match this service's JWT_SECRET).
+
+// Fail fast if the shared secret was never configured in production
+if (process.env.NODE_ENV === 'production' && JWT_SECRET === 'octopus-shared-secret-change-in-production') {
+    console.error('FATAL: JWT_SECRET is unset in production. Refusing to start with the default secret.');
+    process.exit(1);
+}
 
 // Initialize and start
 initDatabase().then(() => {
