@@ -2,7 +2,10 @@ version: '3.8'
 
 services:
   octopus-auth:
-    build: .
+    build:
+      context: .
+      args:
+        - NPM_TOKEN
     container_name: octopus-auth
     restart: unless-stopped
     ports:
