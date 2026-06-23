@@ -23,15 +23,13 @@ if (!fs.existsSync(dataDir)) {
 // Middleware
 app.use(helmet());
 app.use(cors({
-    origin: [
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'https://budget.octopustechnology.net',
-        'https://health.octopustechnology.net',
-        'https://math.octopustechnology.net',
-        'https://octopustechnology.net'
-    ],
-    credentials: true
+    origin: (origin, cb) => {
+        if (!origin) return cb(null, true);
+        const ok = /^https:\/\/([a-z0-9-]+\.)?octopustechnology\.net$/.test(origin)
+                || /^http:\/\/localhost:\d+$/.test(origin);
+        cb(ok ? null : new Error('Not allowed by CORS'), ok);
+    },
+    credentials: true,
 }));
 app.use(express.json());
 
