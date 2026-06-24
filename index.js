@@ -200,6 +200,18 @@ app.get('/api/auth/invites', authenticate, requireRole('admin'), async (req, res
     }
 });
 
+app.delete('/api/auth/invites/:id', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const invite = await InviteCode.findByPk(req.params.id);
+        if (!invite) return res.status(404).json({ success: false, error: 'Invite not found' });
+        if (invite.used) return res.status(400).json({ success: false, error: 'Cannot delete a used invite code' });
+        await invite.destroy();
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to delete invite' });
+    }
+});
+
 // ── Admin: user management ────────────────────────────────────────────────────
 app.get('/api/auth/users', authenticate, requireRole('admin'), async (req, res) => {
     try {
