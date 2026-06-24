@@ -38,6 +38,15 @@ const authLimiter = rateLimit({
 
 const authenticate = createAuthMiddleware();
 
+function validatePassword(password) {
+    if (password.length < 12) return 'Password must be at least 12 characters';
+    if (!/[A-Z]/.test(password)) return 'Password must contain at least one uppercase letter';
+    if (!/[a-z]/.test(password)) return 'Password must contain at least one lowercase letter';
+    if (!/[0-9]/.test(password)) return 'Password must contain at least one number';
+    if (!/[^A-Za-z0-9]/.test(password)) return 'Password must contain at least one symbol (!@#$% etc.)';
+    return null;
+}
+
 function makeToken(user) {
     return jwt.sign(
         { userId: user.id, username: user.username, role: user.role },
@@ -59,9 +68,8 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
         if (username.length < 3 || username.length > 30) {
             return res.status(400).json({ success: false, error: 'Username must be 3-30 characters' });
         }
-        if (password.length < 6) {
-            return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
-        }
+        const pwError = validatePassword(password);
+        if (pwError) return res.status(400).json({ success: false, error: pwError });
         if (!inviteCode) {
             return res.status(400).json({ success: false, error: 'An invite code is required to register' });
         }
@@ -226,9 +234,8 @@ app.post('/api/auth/password', authenticate, async (req, res) => {
         if (!oldPassword || !newPassword) {
             return res.status(400).json({ success: false, error: 'Old and new password required' });
         }
-        if (newPassword.length < 6) {
-            return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
-        }
+        const pwError = validatePassword(newPassword);
+        if (pwError) return res.status(400).json({ success: false, error: pwError });
         const user = await User.findByPk(req.user.userId);
         if (!user || !await bcrypt.compare(oldPassword, user.password)) {
             return res.status(401).json({ success: false, error: 'Current password is incorrect' });
