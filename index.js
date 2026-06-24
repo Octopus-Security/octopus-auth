@@ -179,13 +179,13 @@ app.post('/api/auth/refresh', async (req, res) => {
 // ── Invite codes (admin only) ─────────────────────────────────────────────────
 app.post('/api/auth/invites', authenticate, requireRole('admin'), async (req, res) => {
     try {
-        const { expiresInDays } = req.body;
+        const { expiresInDays, label } = req.body;
         const code = crypto.randomBytes(9).toString('base64url');
         const expiresAt = expiresInDays
             ? new Date(Date.now() + expiresInDays * 86400000)
             : null;
-        const invite = await InviteCode.create({ code, createdBy: req.user.userId, expiresAt });
-        res.status(201).json({ success: true, code: invite.code, expiresAt: invite.expiresAt });
+        const invite = await InviteCode.create({ code, createdBy: req.user.userId, label: label || null, expiresAt });
+        res.status(201).json({ success: true, code: invite.code, label: invite.label, expiresAt: invite.expiresAt });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Failed to create invite code' });
     }

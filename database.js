@@ -65,6 +65,10 @@ const InviteCode = sequelize.define('InviteCode', {
         type: DataTypes.BOOLEAN,
         defaultValue: false
     },
+    label: {
+        type: DataTypes.STRING,
+        allowNull: true
+    },
     expiresAt: {
         type: DataTypes.DATE,
         allowNull: true
