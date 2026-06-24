@@ -75,6 +75,13 @@ const InviteCode = sequelize.define('InviteCode', {
     }
 });
 
+const BannedIP = sequelize.define('BannedIP', {
+    id:       { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    ip:       { type: DataTypes.STRING, allowNull: false, unique: true },
+    reason:   { type: DataTypes.STRING, defaultValue: '5 failed login attempts' },
+    bannedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+}, { timestamps: false });
+
 const initDatabase = async () => {
     try {
         await sequelize.sync({ alter: true });
@@ -84,4 +91,4 @@ const initDatabase = async () => {
     }
 };
 
-module.exports = { sequelize, User, InviteCode, initDatabase };
+module.exports = { sequelize, User, InviteCode, BannedIP, initDatabase };

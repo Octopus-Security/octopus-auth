@@ -6,7 +6,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const { Op } = require('sequelize');
-const { User, InviteCode, initDatabase } = require('./database');
+const { User, InviteCode, BannedIP, initDatabase } = require('./database');
 const { createAuthMiddleware, requireRole } = require('@octopus-security/auth-client');
 const fs = require('fs');
 const path = require('path');
@@ -35,6 +35,26 @@ const authLimiter = rateLimit({
     max: 20,
     message: { success: false, error: 'Too many requests, please try again later.' }
 });
+
+// In-memory failed-login counter (bans persist in SQLite)
+const failedAttempts = new Map();
+const MAX_FAILURES   = 5;
+
+function getClientIP(req) {
+    const fwd = req.headers['x-forwarded-for'];
+    return (fwd ? fwd.split(',')[0].trim() : req.ip || '').replace('::ffff:', '');
+}
+
+async function recordFailure(ip) {
+    const count = (failedAttempts.get(ip) || 0) + 1;
+    failedAttempts.set(ip, count);
+    if (count >= MAX_FAILURES) {
+        await BannedIP.findOrCreate({ where: { ip }, defaults: { reason: `${MAX_FAILURES} failed login attempts` } });
+        failedAttempts.delete(ip);
+        return true;
+    }
+    return false;
+}
 
 const authenticate = createAuthMiddleware();
 
@@ -113,6 +133,13 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
 app.post('/api/auth/login', authLimiter, async (req, res) => {
     try {
         const { username, password } = req.body;
+        const ip = getClientIP(req);
+
+        // Check IP ban first
+        const ban = await BannedIP.findOne({ where: { ip } });
+        if (ban) {
+            return res.status(403).json({ success: false, error: 'Your IP is banned due to too many failed login attempts.' });
+        }
 
         if (!username || !password) {
             return res.status(400).json({ success: false, error: 'Username and password are required' });
@@ -120,6 +147,8 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
         const user = await User.findOne({ where: { username } });
         if (!user || !await bcrypt.compare(password, user.password)) {
+            const nowBanned = await recordFailure(ip);
+            if (nowBanned) return res.status(403).json({ success: false, error: 'Your IP has been banned after too many failed login attempts.' });
             return res.status(401).json({ success: false, error: 'Invalid username or password' });
         }
 
@@ -127,6 +156,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
             return res.status(403).json({ success: false, error: 'Account is disabled' });
         }
 
+        failedAttempts.delete(ip); // clear on success
         user.lastLogin = new Date();
         await user.save();
 
