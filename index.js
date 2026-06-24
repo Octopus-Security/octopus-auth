@@ -135,44 +135,46 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
 });
 
 // ── Login ─────────────────────────────────────────────────────────────────────
+// Always returns the same generic error for any failure — no enumeration of
+// whether the username, password, or 2FA code was wrong.
+const GENERIC_AUTH_ERROR = 'Credentials or 2FA incorrect';
+
 app.post('/api/auth/login', authLimiter, async (req, res) => {
     try {
-        const { username, password } = req.body;
+        const { username, password, totpCode } = req.body;
         const ip = getClientIP(req);
 
-        // Check IP ban first
+        // IP ban check
         const ban = await BannedIP.findOne({ where: { ip } });
         if (ban) {
             return res.status(403).json({ success: false, error: 'Your IP is banned due to too many failed login attempts.' });
         }
 
         if (!username || !password) {
-            return res.status(400).json({ success: false, error: 'Username and password are required' });
+            return res.status(400).json({ success: false, error: GENERIC_AUTH_ERROR });
         }
 
         const user = await User.findOne({ where: { username } });
-        if (!user || !await bcrypt.compare(password, user.password)) {
+        const passwordOk = user && user.isActive && await bcrypt.compare(password, user.password);
+
+        if (!passwordOk) {
             const nowBanned = await recordFailure(ip);
             if (nowBanned) return res.status(403).json({ success: false, error: 'Your IP has been banned after too many failed login attempts.' });
-            return res.status(401).json({ success: false, error: 'Invalid username or password' });
+            return res.status(401).json({ success: false, error: GENERIC_AUTH_ERROR });
         }
 
-        if (!user.isActive) {
-            return res.status(403).json({ success: false, error: 'Account is disabled' });
-        }
-
-        // If TOTP is enabled, issue a short-lived challenge token instead of the full JWT.
-        // The client must complete /api/auth/totp/verify to get the real token.
+        // If TOTP is enabled, verify the code — same generic error on failure.
         if (user.totpEnabled && user.totpSecret) {
-            const challengeToken = jwt.sign(
-                { userId: user.id, username: user.username, role: user.role, purpose: 'totp-challenge' },
-                JWT_SECRET,
-                { expiresIn: '5m' }
-            );
-            return res.json({ success: true, totp_required: true, challengeToken });
+            const codeStr = String(totpCode || '').replace(/\s/g, '');
+            const totpOk  = codeStr.length > 0 && authenticator.verify({ token: codeStr, secret: user.totpSecret });
+            if (!totpOk) {
+                const nowBanned = await recordFailure(ip);
+                if (nowBanned) return res.status(403).json({ success: false, error: 'Your IP has been banned after too many failed login attempts.' });
+                return res.status(401).json({ success: false, error: GENERIC_AUTH_ERROR });
+            }
         }
 
-        failedAttempts.delete(ip); // clear on success
+        failedAttempts.delete(ip);
         user.lastLogin = new Date();
         await user.save();
 
