@@ -8,6 +8,8 @@
     "dev": "nodemon index.js"
   },
   "dependencies": {
+    "otplib": "^12.0.1",
+    "qrcode": "^1.5.4",
     "@octopus-security/auth-client": "^1.0.1",
     "express": "^4.18.2",
     "cors": "^2.8.5",

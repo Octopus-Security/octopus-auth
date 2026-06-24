@@ -8,8 +8,13 @@ const rateLimit = require('express-rate-limit');
 const { Op } = require('sequelize');
 const { User, InviteCode, BannedIP, initDatabase } = require('./database');
 const { createAuthMiddleware, requireRole } = require('@octopus-security/auth-client');
+const { authenticator } = require('otplib');
+const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+
+// TOTP window: allow 1 step before/after (30-second grace for clock drift)
+authenticator.options = { window: 1 };
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -156,6 +161,17 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
             return res.status(403).json({ success: false, error: 'Account is disabled' });
         }
 
+        // If TOTP is enabled, issue a short-lived challenge token instead of the full JWT.
+        // The client must complete /api/auth/totp/verify to get the real token.
+        if (user.totpEnabled && user.totpSecret) {
+            const challengeToken = jwt.sign(
+                { userId: user.id, username: user.username, role: user.role, purpose: 'totp-challenge' },
+                JWT_SECRET,
+                { expiresIn: '5m' }
+            );
+            return res.json({ success: true, totp_required: true, challengeToken });
+        }
+
         failedAttempts.delete(ip); // clear on success
         user.lastLogin = new Date();
         await user.save();
@@ -287,6 +303,129 @@ app.post('/api/auth/password', authenticate, async (req, res) => {
         res.json({ success: true, message: 'Password updated' });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Failed to update password' });
+    }
+});
+
+// ── TOTP 2FA ──────────────────────────────────────────────────────────────────
+
+// GET /api/auth/totp/status — is TOTP enabled for the current user?
+app.get('/api/auth/totp/status', authenticate, async (req, res) => {
+    try {
+        const user = await User.findByPk(req.user.userId);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+        res.json({ success: true, enabled: !!user.totpEnabled });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Failed to get TOTP status' });
+    }
+});
+
+// POST /api/auth/totp/setup — generate a new TOTP secret + QR code (does NOT save yet)
+app.post('/api/auth/totp/setup', authenticate, async (req, res) => {
+    try {
+        const user = await User.findByPk(req.user.userId);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+        const secret = authenticator.generateSecret(20);
+        const otpauthUrl = authenticator.keyuri(user.username, 'OctopusTechnology', secret);
+        const qrDataUrl = await QRCode.toDataURL(otpauthUrl);
+
+        res.json({ success: true, secret, otpauthUrl, qrDataUrl });
+    } catch (err) {
+        console.error('TOTP setup error:', err);
+        res.status(500).json({ success: false, error: 'Failed to generate TOTP secret' });
+    }
+});
+
+// POST /api/auth/totp/enable — verify a code against the generated secret, then save
+// Body: { secret, code }
+app.post('/api/auth/totp/enable', authenticate, async (req, res) => {
+    try {
+        const { secret, code } = req.body;
+        if (!secret || !code) return res.status(400).json({ success: false, error: 'secret and code are required' });
+
+        const valid = authenticator.verify({ token: String(code).replace(/\s/g, ''), secret });
+        if (!valid) return res.status(400).json({ success: false, error: 'Invalid code — make sure your authenticator app is synced and try again' });
+
+        const user = await User.findByPk(req.user.userId);
+        user.totpSecret  = secret;
+        user.totpEnabled = true;
+        await user.save();
+
+        res.json({ success: true, message: '2FA enabled successfully' });
+    } catch (err) {
+        console.error('TOTP enable error:', err);
+        res.status(500).json({ success: false, error: 'Failed to enable TOTP' });
+    }
+});
+
+// DELETE /api/auth/totp/disable — disable TOTP (requires current password + TOTP code)
+// Body: { password, code }
+app.delete('/api/auth/totp/disable', authenticate, async (req, res) => {
+    try {
+        const { password, code } = req.body;
+        if (!password || !code) return res.status(400).json({ success: false, error: 'password and code are required' });
+
+        const user = await User.findByPk(req.user.userId);
+        if (!user || !await bcrypt.compare(password, user.password)) {
+            return res.status(401).json({ success: false, error: 'Incorrect password' });
+        }
+        if (user.totpEnabled && user.totpSecret) {
+            const valid = authenticator.verify({ token: String(code).replace(/\s/g, ''), secret: user.totpSecret });
+            if (!valid) return res.status(400).json({ success: false, error: 'Invalid 2FA code' });
+        }
+
+        user.totpSecret  = null;
+        user.totpEnabled = false;
+        await user.save();
+
+        res.json({ success: true, message: '2FA disabled' });
+    } catch (err) {
+        console.error('TOTP disable error:', err);
+        res.status(500).json({ success: false, error: 'Failed to disable TOTP' });
+    }
+});
+
+// POST /api/auth/totp/verify — complete a 2FA challenge
+// Body: { challengeToken, code }
+app.post('/api/auth/totp/verify', authLimiter, async (req, res) => {
+    try {
+        const { challengeToken, code } = req.body;
+        if (!challengeToken || !code) return res.status(400).json({ success: false, error: 'challengeToken and code are required' });
+
+        let decoded;
+        try {
+            decoded = jwt.verify(challengeToken, JWT_SECRET);
+        } catch {
+            return res.status(401).json({ success: false, error: 'Challenge token expired or invalid. Please log in again.' });
+        }
+        if (decoded.purpose !== 'totp-challenge') {
+            return res.status(401).json({ success: false, error: 'Invalid challenge token' });
+        }
+
+        const user = await User.findByPk(decoded.userId);
+        if (!user || !user.isActive || !user.totpSecret) {
+            return res.status(401).json({ success: false, error: 'User not found or 2FA not configured' });
+        }
+
+        const valid = authenticator.verify({ token: String(code).replace(/\s/g, ''), secret: user.totpSecret });
+        if (!valid) {
+            const ip = getClientIP(req);
+            const nowBanned = await recordFailure(ip);
+            if (nowBanned) return res.status(403).json({ success: false, error: 'Too many failed attempts. Your IP has been banned.' });
+            return res.status(401).json({ success: false, error: 'Invalid 2FA code' });
+        }
+
+        // TOTP verified — clear failure counter, update lastLogin, issue real JWT
+        const ip = getClientIP(req);
+        failedAttempts.delete(ip);
+        user.lastLogin = new Date();
+        await user.save();
+
+        const token = makeToken(user);
+        res.json({ success: true, token, username: user.username, role: user.role });
+    } catch (err) {
+        console.error('TOTP verify error:', err);
+        res.status(500).json({ success: false, error: 'Verification failed' });
     }
 });
 

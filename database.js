@@ -39,6 +39,15 @@ const User = sequelize.define('User', {
     lastLogin: {
         type: DataTypes.DATE,
         allowNull: true
+    },
+    totpSecret: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        defaultValue: null
+    },
+    totpEnabled: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false
     }
 });
 
