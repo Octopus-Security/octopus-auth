@@ -23,7 +23,20 @@ const JWT_SECRET = process.env.JWT_SECRET || 'octopus-shared-secret-change-in-pr
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-app.use(helmet());
+// Per-request CSP nonce so the central login page's inline script can run while
+// keeping a strict script-src (no blanket 'unsafe-inline').
+app.use((req, res, next) => {
+    res.locals.cspNonce = crypto.randomBytes(16).toString('base64');
+    next();
+});
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+            'script-src': ["'self'", (req, res) => `'nonce-${res.locals.cspNonce}'`],
+        },
+    },
+}));
 app.use(cors({
     origin: (origin, cb) => {
         if (!origin) return cb(null, true);
@@ -608,7 +621,7 @@ app.get('/login', (req, res) => {
   <div class="hint" id="hint"></div>
 </div>
 
-<script>
+<script nonce="${res.locals.cspNonce}">
 const REDIRECT = ${JSON.stringify(redirect)};
 const $ = s => document.querySelector(s);
 const err = m => { $('#err').textContent = m || ''; };
