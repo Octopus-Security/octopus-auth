@@ -520,6 +520,140 @@ app.post('/api/auth/totp/verify', authLimiter, async (req, res) => {
     }
 });
 
+// ── Central SSO login ───────────────────────────────────────────────────────
+// One login page for every octopustechnology.net app. On success it sets a JWT
+// cookie scoped to the whole domain so the session is shared across subdomains.
+
+const SSO_COOKIE = 'octopus_sso';
+
+// Only ever redirect back to our own apps — block open redirects.
+function safeRedirect(target) {
+    try {
+        const u = new URL(target);
+        if (u.protocol === 'https:' && /(^|\.)octopustechnology\.net$/.test(u.hostname)) return u.toString();
+    } catch { /* fall through */ }
+    return 'https://octopustechnology.net';
+}
+
+// POST /api/auth/sso/session { token } — validate a session token and set the
+// shared HttpOnly cookie. Rejects challenge/enroll tokens (they carry `purpose`).
+app.post('/api/auth/sso/session', authLimiter, (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ success: false, error: 'token required' });
+        let decoded;
+        try { decoded = jwt.verify(token, JWT_SECRET); }
+        catch { return res.status(401).json({ success: false, error: 'invalid token' }); }
+        if (decoded.purpose) return res.status(401).json({ success: false, error: 'not a session token' });
+        res.cookie(SSO_COOKIE, token, {
+            domain: '.octopustechnology.net',
+            httpOnly: true, secure: true, sameSite: 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: 'session failed' });
+    }
+});
+
+// GET /logout — clear the shared cookie and bounce back.
+app.get('/logout', (req, res) => {
+    res.clearCookie(SSO_COOKIE, { domain: '.octopustechnology.net' });
+    res.redirect(safeRedirect(req.query.redirect));
+});
+
+// GET /login?redirect=<app-url> — the single login page.
+app.get('/login', (req, res) => {
+    const redirect = safeRedirect(req.query.redirect);
+    res.type('html').send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in · OctopusTechnology</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:#0e1116;color:#e6edf3;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .card{width:340px;max-width:92vw;background:#161b22;border:1px solid #30363d;border-radius:14px;padding:28px}
+  h1{font-size:1.2rem;margin:0 0 4px;text-align:center}
+  .sub{color:#8b949e;font-size:.85rem;text-align:center;margin-bottom:20px}
+  label{display:block;font-size:.8rem;color:#8b949e;margin:12px 0 4px}
+  input{width:100%;padding:10px;border:1px solid #30363d;border-radius:8px;background:#0d1117;color:#e6edf3;font-size:.95rem}
+  button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:8px;background:#2ea043;color:#fff;font-weight:600;font-size:.95rem;cursor:pointer}
+  button:hover{background:#2c974b}
+  .err{color:#f85149;font-size:.85rem;margin-top:12px;min-height:1em;text-align:center}
+  .qr{display:block;margin:12px auto;width:180px;height:180px;background:#fff;border-radius:8px}
+  .hint{color:#8b949e;font-size:.78rem;text-align:center;margin-top:8px}
+  .hidden{display:none}
+</style></head><body>
+<div class="card">
+  <h1>🐙 OctopusTechnology</h1>
+  <div class="sub">Sign in to continue</div>
+
+  <form id="loginForm">
+    <label>Username</label><input name="username" autocomplete="username" required autofocus>
+    <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
+    <label>2FA code</label><input name="totpCode" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code">
+    <button type="submit">Sign in</button>
+  </form>
+
+  <form id="enrollForm" class="hidden">
+    <div class="sub">Set up 2FA — scan this with your authenticator app, then enter the code.</div>
+    <img id="qr" class="qr" alt="2FA QR code">
+    <label>Authenticator code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required>
+    <button type="submit">Enable 2FA &amp; continue</button>
+  </form>
+
+  <div class="err" id="err"></div>
+  <div class="hint" id="hint"></div>
+</div>
+
+<script>
+const REDIRECT = ${JSON.stringify(redirect)};
+const $ = s => document.querySelector(s);
+const err = m => { $('#err').textContent = m || ''; };
+let enroll = null; // { enrollToken, secret }
+
+async function post(url, body){
+  const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'include', body: JSON.stringify(body) });
+  return r.json();
+}
+async function setSessionAndGo(token){
+  const s = await post('/api/auth/sso/session', { token });
+  if (s.success) { window.location.href = REDIRECT; }
+  else err(s.error || 'Could not start session');
+}
+
+$('#loginForm').addEventListener('submit', async e => {
+  e.preventDefault(); err('');
+  const f = e.target;
+  const data = await post('/api/auth/login', {
+    username: f.username.value, password: f.password.value, totpCode: f.totpCode.value,
+  });
+  if (data.success && data.token) return setSessionAndGo(data.token);
+  if (data.requiresEnrollment) {
+    enroll = { enrollToken: data.enrollToken, secret: data.secret };
+    $('#qr').src = data.qrDataUrl;
+    $('#loginForm').classList.add('hidden');
+    $('#enrollForm').classList.remove('hidden');
+    $('#hint').textContent = 'Secret: ' + data.secret;
+    return;
+  }
+  err(data.error || 'Sign in failed');
+});
+
+$('#enrollForm').addEventListener('submit', async e => {
+  e.preventDefault(); err('');
+  const data = await post('/api/auth/totp/enroll', {
+    enrollToken: enroll.enrollToken, secret: enroll.secret, code: e.target.code.value,
+  });
+  if (data.success && data.token) return setSessionAndGo(data.token);
+  err(data.error || 'Enrollment failed');
+});
+</script>
+</body></html>`);
+});
+
 if (process.env.NODE_ENV === 'production' && JWT_SECRET === 'octopus-shared-secret-change-in-production') {
     console.error('FATAL: JWT_SECRET is unset in production. Refusing to start with the default secret.');
     process.exit(1);
