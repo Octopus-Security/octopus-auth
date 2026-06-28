@@ -72,12 +72,44 @@ function validatePassword(password) {
     return null;
 }
 
+// When true, every account must have TOTP 2FA. Accounts without it cannot get a
+// session — login/register return an enrollment challenge instead. Set via
+// REQUIRE_2FA (compose defaults it true). Accounts that already have 2FA (e.g. the
+// admin) are unaffected; only 2FA-less accounts hit the enrollment path. If the env
+// var is entirely unset, the code falls back to off as a safety.
+const REQUIRE_2FA = String(process.env.REQUIRE_2FA || '').toLowerCase() === 'true';
+
 function makeToken(user) {
     return jwt.sign(
         { userId: user.id, username: user.username, role: user.role },
         JWT_SECRET,
         { expiresIn: '7d' }
     );
+}
+
+// Short-lived token that ONLY authorizes completing first-time TOTP enrollment —
+// it is not a session and carries no role.
+function makeEnrollToken(user) {
+    return jwt.sign(
+        { userId: user.id, username: user.username, purpose: 'totp-enroll' },
+        JWT_SECRET,
+        { expiresIn: '10m' }
+    );
+}
+
+// Build the response sent when a 2FA-less account must enroll: a fresh secret +
+// QR for the authenticator app, plus the enrollToken to complete via /totp/enroll.
+async function buildEnrollmentResponse(user) {
+    const secret     = authenticator.generateSecret(20);
+    const otpauthUrl = authenticator.keyuri(user.username, 'OctopusTechnology', secret);
+    const qrDataUrl  = await QRCode.toDataURL(otpauthUrl);
+    return {
+        success: false,
+        requiresEnrollment: true,
+        message: '2FA setup is required before you can sign in.',
+        enrollToken: makeEnrollToken(user),
+        secret, otpauthUrl, qrDataUrl,
+    };
 }
 
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'octopus-auth' }));
@@ -126,6 +158,11 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
         invite.usedBy = user.id;
         await invite.save();
 
+        // Mandatory 2FA: new accounts must enroll before getting a session.
+        if (REQUIRE_2FA) {
+            return res.status(201).json(await buildEnrollmentResponse(user));
+        }
+
         const token = makeToken(user);
         res.status(201).json({ success: true, message: 'User registered successfully', token, userId: user.id, username: user.username, role: user.role });
     } catch (error) {
@@ -172,6 +209,11 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
                 if (nowBanned) return res.status(403).json({ success: false, error: 'Your IP has been banned after too many failed login attempts.' });
                 return res.status(401).json({ success: false, error: GENERIC_AUTH_ERROR });
             }
+        } else if (REQUIRE_2FA) {
+            // Password is correct but the account has no 2FA — mandatory enrollment.
+            // Issue an enroll challenge instead of a session.
+            failedAttempts.delete(ip);
+            return res.json(await buildEnrollmentResponse(user));
         }
 
         failedAttempts.delete(ip);
@@ -360,10 +402,57 @@ app.post('/api/auth/totp/enable', authenticate, async (req, res) => {
     }
 });
 
+// POST /api/auth/totp/enroll — complete MANDATORY first-time 2FA enrollment.
+// Authed by the short-lived enrollToken from login/register (no session yet).
+// Body: { enrollToken, secret, code }  (secret comes from the enrollment response)
+app.post('/api/auth/totp/enroll', authLimiter, async (req, res) => {
+    try {
+        const { enrollToken, secret, code } = req.body;
+        if (!enrollToken || !secret || !code) {
+            return res.status(400).json({ success: false, error: 'enrollToken, secret and code are required' });
+        }
+
+        let decoded;
+        try {
+            decoded = jwt.verify(enrollToken, JWT_SECRET);
+        } catch {
+            return res.status(401).json({ success: false, error: 'Enrollment session expired. Please log in again.' });
+        }
+        if (decoded.purpose !== 'totp-enroll') {
+            return res.status(401).json({ success: false, error: 'Invalid enrollment token' });
+        }
+
+        const user = await User.findByPk(decoded.userId);
+        if (!user || !user.isActive) {
+            return res.status(401).json({ success: false, error: 'User not found' });
+        }
+
+        const valid = authenticator.verify({ token: String(code).replace(/\s/g, ''), secret });
+        if (!valid) {
+            return res.status(400).json({ success: false, error: 'Invalid code — make sure your authenticator app is synced and try again' });
+        }
+
+        user.totpSecret  = secret;
+        user.totpEnabled = true;
+        user.lastLogin   = new Date();
+        await user.save();
+
+        // Enrollment complete — issue a real session token.
+        const token = makeToken(user);
+        res.json({ success: true, message: '2FA enabled', token, username: user.username, role: user.role });
+    } catch (err) {
+        console.error('TOTP enroll error:', err);
+        res.status(500).json({ success: false, error: 'Enrollment failed' });
+    }
+});
+
 // DELETE /api/auth/totp/disable — disable TOTP (requires current password + TOTP code)
 // Body: { password, code }
 app.delete('/api/auth/totp/disable', authenticate, async (req, res) => {
     try {
+        if (REQUIRE_2FA) {
+            return res.status(403).json({ success: false, error: '2FA is required and cannot be disabled.' });
+        }
         const { password, code } = req.body;
         if (!password || !code) return res.status(400).json({ success: false, error: 'password and code are required' });
 

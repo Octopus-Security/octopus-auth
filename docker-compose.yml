@@ -14,6 +14,7 @@ services:
       - NODE_ENV=production
       - JWT_SECRET=${JWT_SECRET:-octopus-shared-secret-change-in-production}
       - PORT=3002
+      - REQUIRE_2FA=${REQUIRE_2FA:-true}
     volumes:
       - auth_data:/app/data
     networks:
