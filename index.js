@@ -342,6 +342,132 @@ app.patch('/api/auth/users/:id', authenticate, requireRole('admin'), async (req,
     }
 });
 
+app.post('/api/auth/users', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { username, password, email, role } = req.body;
+        if (!username || !password) return res.status(400).json({ success: false, error: 'Username and password are required' });
+        if (username.length < 3 || username.length > 30) return res.status(400).json({ success: false, error: 'Username must be 3-30 characters' });
+        const pwError = validatePassword(password);
+        if (pwError) return res.status(400).json({ success: false, error: pwError });
+        const existing = await User.findOne({ where: { username } });
+        if (existing) return res.status(409).json({ success: false, error: 'Username already exists' });
+        const hashedPassword = await bcrypt.hash(password, 12);
+        const user = await User.create({ username, password: hashedPassword, email: email || null, role: role || 'user' });
+        res.status(201).json({ success: true, user: { id: user.id, username: user.username, role: user.role, isActive: user.isActive } });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to create user' });
+    }
+});
+
+app.delete('/api/auth/users/:id', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const user = await User.findByPk(req.params.id);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+        // Prevent deleting the only admin
+        if (user.role === 'admin') {
+            const adminCount = await User.count({ where: { role: 'admin' } });
+            if (adminCount <= 1) return res.status(400).json({ success: false, error: 'Cannot delete the last admin account' });
+        }
+        await user.destroy();
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to delete user' });
+    }
+});
+
+app.post('/api/auth/users/:id/password-reset', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const user = await User.findByPk(req.params.id);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+        const token = crypto.randomBytes(32).toString('hex');
+        user.resetToken = token;
+        user.resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+        await user.save();
+        const baseUrl = process.env.AUTH_PUBLIC_URL || `http://localhost:${process.env.PORT || 3002}`;
+        res.json({ success: true, resetUrl: `${baseUrl}/reset-password?token=${token}`, expiresAt: user.resetTokenExpiry });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to generate reset token' });
+    }
+});
+
+// ── Public: password reset via token ─────────────────────────────────────────
+
+app.post('/api/auth/password-reset/use', authLimiter, async (req, res) => {
+    try {
+        const { token, newPassword } = req.body;
+        if (!token || !newPassword) return res.status(400).json({ success: false, error: 'Token and new password are required' });
+        const pwError = validatePassword(newPassword);
+        if (pwError) return res.status(400).json({ success: false, error: pwError });
+        const user = await User.findOne({ where: { resetToken: token } });
+        if (!user || !user.resetTokenExpiry || new Date() > user.resetTokenExpiry) {
+            return res.status(400).json({ success: false, error: 'Reset link is invalid or has expired' });
+        }
+        user.password = await bcrypt.hash(newPassword, 12);
+        user.resetToken = null;
+        user.resetTokenExpiry = null;
+        await user.save();
+        res.json({ success: true, message: 'Password updated — you can now sign in' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to reset password' });
+    }
+});
+
+app.get('/reset-password', (req, res) => {
+    const { token } = req.query;
+    res.type('html').send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reset password · OctopusTechnology</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:#0e1116;color:#e6edf3;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .card{width:340px;max-width:92vw;background:#161b22;border:1px solid #30363d;border-radius:14px;padding:28px}
+  h1{font-size:1.2rem;margin:0 0 4px;text-align:center}
+  .sub{color:#8b949e;font-size:.85rem;text-align:center;margin-bottom:20px}
+  label{display:block;font-size:.8rem;color:#8b949e;margin:12px 0 4px}
+  input{width:100%;padding:10px;border:1px solid #30363d;border-radius:8px;background:#0d1117;color:#e6edf3;font-size:.95rem}
+  button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:8px;background:#2ea043;color:#fff;font-weight:600;font-size:.95rem;cursor:pointer}
+  button:hover{background:#2c974b}
+  .err{color:#f85149;font-size:.85rem;margin-top:12px;min-height:1em;text-align:center}
+  .ok{color:#3fb950;font-size:.85rem;margin-top:12px;text-align:center}
+</style></head><body>
+<div class="card">
+  <h1>🐙 OctopusTechnology</h1>
+  <div class="sub">Set a new password</div>
+  <form id="f">
+    <label>New password</label><input name="pw" type="password" autocomplete="new-password" required autofocus>
+    <label>Confirm password</label><input name="pw2" type="password" autocomplete="new-password" required>
+    <button type="submit">Set password</button>
+  </form>
+  <div class="err" id="err"></div>
+  <div class="ok hidden" id="ok"></div>
+</div>
+<script>
+const TOKEN = ${JSON.stringify(token || '')};
+document.querySelector('.hidden')?.classList?.remove('hidden');
+document.getElementById('f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const pw = e.target.pw.value, pw2 = e.target.pw2.value;
+  document.getElementById('err').textContent = '';
+  if (pw !== pw2) { document.getElementById('err').textContent = 'Passwords do not match'; return; }
+  const r = await fetch('/api/auth/password-reset/use', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: TOKEN, newPassword: pw }),
+  }).then(x => x.json());
+  if (r.success) {
+    document.getElementById('f').style.display = 'none';
+    document.getElementById('ok').textContent = r.message + ' Redirecting to sign in…';
+    setTimeout(() => window.location.href = '/login', 2500);
+  } else {
+    document.getElementById('err').textContent = r.error || 'Reset failed';
+  }
+});
+</script>
+</body></html>`);
+});
+
 // ── Password change ───────────────────────────────────────────────────────────
 app.post('/api/auth/password', authenticate, async (req, res) => {
     try {

@@ -48,6 +48,16 @@ const User = sequelize.define('User', {
     totpEnabled: {
         type: DataTypes.BOOLEAN,
         defaultValue: false
+    },
+    resetToken: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        defaultValue: null
+    },
+    resetTokenExpiry: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        defaultValue: null
     }
 });
 
