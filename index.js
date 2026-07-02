@@ -86,11 +86,10 @@ function validatePassword(password) {
 }
 
 // When true, every account must have TOTP 2FA. Accounts without it cannot get a
-// session — login/register return an enrollment challenge instead. Set via
-// REQUIRE_2FA (compose defaults it true). Accounts that already have 2FA (e.g. the
-// admin) are unaffected; only 2FA-less accounts hit the enrollment path. If the env
-// var is entirely unset, the code falls back to off as a safety.
-const REQUIRE_2FA = String(process.env.REQUIRE_2FA || '').toLowerCase() === 'true';
+// session — login/register return an enrollment challenge instead. Enforced by
+// default: only an explicit REQUIRE_2FA=false disables it. Accounts that already
+// have 2FA (e.g. the admin) are unaffected; only 2FA-less accounts hit enrollment.
+const REQUIRE_2FA = String(process.env.REQUIRE_2FA ?? 'true').toLowerCase() !== 'false';
 
 function makeToken(user) {
     return jwt.sign(
@@ -215,7 +214,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
         // If TOTP is enabled, verify the code — same generic error on failure.
         if (user.totpEnabled && user.totpSecret) {
-            const codeStr = String(totpCode || '').replace(/\s/g, '');
+            const codeStr = String(totpCode || '').replace(/\D/g, '');
             const totpOk  = codeStr.length > 0 && authenticator.verify({ token: codeStr, secret: user.totpSecret });
             if (!totpOk) {
                 const nowBanned = await recordFailure(ip);
@@ -526,7 +525,7 @@ app.post('/api/auth/totp/enable', authenticate, async (req, res) => {
         const { secret, code } = req.body;
         if (!secret || !code) return res.status(400).json({ success: false, error: 'secret and code are required' });
 
-        const valid = authenticator.verify({ token: String(code).replace(/\s/g, ''), secret });
+        const valid = authenticator.verify({ token: String(code).replace(/\D/g, ''), secret });
         if (!valid) return res.status(400).json({ success: false, error: 'Invalid code — make sure your authenticator app is synced and try again' });
 
         const user = await User.findByPk(req.user.userId);
@@ -566,7 +565,7 @@ app.post('/api/auth/totp/enroll', authLimiter, async (req, res) => {
             return res.status(401).json({ success: false, error: 'User not found' });
         }
 
-        const valid = authenticator.verify({ token: String(code).replace(/\s/g, ''), secret });
+        const valid = authenticator.verify({ token: String(code).replace(/\D/g, ''), secret });
         if (!valid) {
             return res.status(400).json({ success: false, error: 'Invalid code — make sure your authenticator app is synced and try again' });
         }
@@ -600,7 +599,7 @@ app.delete('/api/auth/totp/disable', authenticate, async (req, res) => {
             return res.status(401).json({ success: false, error: 'Incorrect password' });
         }
         if (user.totpEnabled && user.totpSecret) {
-            const valid = authenticator.verify({ token: String(code).replace(/\s/g, ''), secret: user.totpSecret });
+            const valid = authenticator.verify({ token: String(code).replace(/\D/g, ''), secret: user.totpSecret });
             if (!valid) return res.status(400).json({ success: false, error: 'Invalid 2FA code' });
         }
 
@@ -637,7 +636,7 @@ app.post('/api/auth/totp/verify', authLimiter, async (req, res) => {
             return res.status(401).json({ success: false, error: 'User not found or 2FA not configured' });
         }
 
-        const valid = authenticator.verify({ token: String(code).replace(/\s/g, ''), secret: user.totpSecret });
+        const valid = authenticator.verify({ token: String(code).replace(/\D/g, ''), secret: user.totpSecret });
         if (!valid) {
             const ip = getClientIP(req);
             const nowBanned = await recordFailure(ip);
@@ -732,14 +731,14 @@ app.get('/login', (req, res) => {
   <form id="loginForm">
     <label>Username</label><input name="username" autocomplete="username" required autofocus>
     <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
-    <label>2FA code</label><input name="totpCode" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code">
+    <label>2FA code</label><input name="totpCode" inputmode="numeric" autocomplete="one-time-code" placeholder="000 - 000" maxlength="9" style="text-align:center;letter-spacing:2px;font-variant-numeric:tabular-nums">
     <button type="submit">Sign in</button>
   </form>
 
   <form id="enrollForm" class="hidden">
     <div class="sub">Set up 2FA — scan this with your authenticator app, then enter the code.</div>
     <img id="qr" class="qr" alt="2FA QR code">
-    <label>Authenticator code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required>
+    <label>Authenticator code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="000 - 000" maxlength="9" required style="text-align:center;letter-spacing:2px;font-variant-numeric:tabular-nums">
     <button type="submit">Enable 2FA &amp; continue</button>
   </form>
 
@@ -752,6 +751,15 @@ const REDIRECT = ${JSON.stringify(redirect)};
 const $ = s => document.querySelector(s);
 const err = m => { $('#err').textContent = m || ''; };
 let enroll = null; // { enrollToken, secret }
+
+// Format 2FA inputs as "000 - 000" while typing (server strips non-digits).
+function bindOtpFormat(input){
+  input.addEventListener('input', () => {
+    const d = input.value.replace(/\\D/g, '').slice(0, 6);
+    input.value = d.length > 3 ? d.slice(0, 3) + ' - ' + d.slice(3) : d;
+  });
+}
+document.querySelectorAll('input[autocomplete="one-time-code"]').forEach(bindOtpFormat);
 
 async function post(url, body){
   const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'include', body: JSON.stringify(body) });
