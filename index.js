@@ -76,6 +76,15 @@ async function recordFailure(ip) {
 
 const authenticate = createAuthMiddleware();
 
+// Ban management is reachable either by an admin JWT (web panel) or by a trusted
+// internal service presenting the shared secret (the cortex Discord bot). Mirrors
+// the x-internal-secret pattern used by octopus-ops.
+const INTERNAL_SECRET = process.env.INTERNAL_SECRET || '';
+function internalOrAdmin(req, res, next) {
+    if (INTERNAL_SECRET && req.get('x-internal-secret') === INTERNAL_SECRET) return next();
+    return authenticate(req, res, () => requireRole('admin')(req, res, next));
+}
+
 function validatePassword(password) {
     if (password.length < 12) return 'Password must be at least 12 characters';
     if (!/[A-Z]/.test(password)) return 'Password must contain at least one uppercase letter';
@@ -311,6 +320,26 @@ app.delete('/api/auth/invites/:id', authenticate, requireRole('admin'), async (r
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Failed to delete invite' });
+    }
+});
+
+// ── Banned IPs (admin or internal service) ────────────────────────────────────
+app.get('/api/auth/banned-ips', internalOrAdmin, async (req, res) => {
+    try {
+        const bans = await BannedIP.findAll({ order: [['bannedAt', 'DESC']] });
+        res.json({ success: true, bans });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to fetch banned IPs' });
+    }
+});
+
+app.delete('/api/auth/banned-ips/:ip', internalOrAdmin, async (req, res) => {
+    try {
+        const removed = await BannedIP.destroy({ where: { ip: req.params.ip } });
+        if (!removed) return res.status(404).json({ success: false, error: 'IP not found in ban list' });
+        res.json({ success: true, ip: req.params.ip });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to remove ban' });
     }
 });
 
