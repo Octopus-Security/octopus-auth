@@ -15,6 +15,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:-octopus-shared-secret-change-in-production}
       - PORT=3002
       - REQUIRE_2FA=${REQUIRE_2FA:-true}
+      - INTERNAL_SECRET=${INTERNAL_SECRET:-}
     volumes:
       - auth_data:/app/data
     networks:
