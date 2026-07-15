@@ -729,9 +729,21 @@ app.get('/logout', (req, res) => {
     res.redirect(safeRedirect(req.query.redirect));
 });
 
-// GET /login?redirect=<app-url> — the single login page.
+// GET /register — convenience alias that opens the central page on the
+// "Create account" view. Preserves the redirect target.
+app.get('/register', (req, res) => {
+    const params = new URLSearchParams({ register: '1' });
+    if (req.query.redirect) params.set('redirect', req.query.redirect);
+    res.redirect(`/login?${params.toString()}`);
+});
+
+// GET /login?redirect=<app-url>[&register=1] — the single login/register page.
+// Sign in and Create account live here so every octopustechnology.net app funnels
+// to one place. Registration requires an invite code and (via REQUIRE_2FA) forces
+// TOTP enrollment before a session is ever issued — same guarantees as sign-in.
 app.get('/login', (req, res) => {
     const redirect = safeRedirect(req.query.redirect);
+    const startRegister = req.query.register === '1' || req.query.register === 'true';
     res.type('html').send(`<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -751,17 +763,32 @@ app.get('/login', (req, res) => {
   .err{color:#f85149;font-size:.85rem;margin-top:12px;min-height:1em;text-align:center}
   .qr{display:block;margin:12px auto;width:180px;height:180px;background:#fff;border-radius:8px}
   .hint{color:#8b949e;font-size:.78rem;text-align:center;margin-top:8px}
+  .switch{color:#8b949e;font-size:.82rem;text-align:center;margin-top:18px}
+  .switch a{color:#2ea043;cursor:pointer;text-decoration:none}
+  .switch a:hover{text-decoration:underline}
+  .req{color:#6e7681;font-size:.72rem;margin-top:6px;line-height:1.4}
   .hidden{display:none}
 </style></head><body>
 <div class="card">
   <h1>🐙 OctopusTechnology</h1>
-  <div class="sub">Sign in to continue</div>
+  <div class="sub" id="sub">Sign in to continue</div>
 
   <form id="loginForm">
     <label>Username</label><input name="username" autocomplete="username" required autofocus>
     <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
     <label>2FA code</label><input name="totpCode" inputmode="numeric" autocomplete="one-time-code" placeholder="000 - 000" maxlength="9" style="text-align:center;letter-spacing:2px;font-variant-numeric:tabular-nums">
     <button type="submit">Sign in</button>
+    <div class="switch">Need an account? <a id="toRegister">Create one</a></div>
+  </form>
+
+  <form id="registerForm" class="hidden">
+    <label>Username</label><input name="username" autocomplete="username" minlength="3" maxlength="30">
+    <label>Password</label><input name="password" type="password" autocomplete="new-password">
+    <label>Email <span style="color:#6e7681">(optional)</span></label><input name="email" type="email" autocomplete="email">
+    <label>Invite code</label><input name="inviteCode" autocomplete="off" placeholder="Required to register">
+    <div class="req">Password: 12+ characters with an uppercase, lowercase, number, and symbol. You'll set up 2FA next — it's required for every account.</div>
+    <button type="submit">Create account</button>
+    <div class="switch">Already have an account? <a id="toLogin">Sign in</a></div>
   </form>
 
   <form id="enrollForm" class="hidden">
@@ -777,6 +804,7 @@ app.get('/login', (req, res) => {
 
 <script nonce="${res.locals.cspNonce}">
 const REDIRECT = ${JSON.stringify(redirect)};
+const START_REGISTER = ${startRegister ? 'true' : 'false'};
 const $ = s => document.querySelector(s);
 const err = m => { $('#err').textContent = m || ''; };
 let enroll = null; // { enrollToken, secret }
@@ -790,6 +818,18 @@ function bindOtpFormat(input){
 }
 document.querySelectorAll('input[autocomplete="one-time-code"]').forEach(bindOtpFormat);
 
+// Toggle between the Sign in and Create account views.
+function showView(which){
+  err('');
+  const login = which === 'login';
+  $('#loginForm').classList.toggle('hidden', !login);
+  $('#registerForm').classList.toggle('hidden', login);
+  $('#sub').textContent = login ? 'Sign in to continue' : 'Create your account';
+  (login ? $('#loginForm').username : $('#registerForm').username).focus();
+}
+$('#toRegister').addEventListener('click', () => showView('register'));
+$('#toLogin').addEventListener('click', () => showView('login'));
+
 async function post(url, body){
   const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'include', body: JSON.stringify(body) });
   return r.json();
@@ -799,6 +839,17 @@ async function setSessionAndGo(token){
   if (s.success) { window.location.href = REDIRECT; }
   else err(s.error || 'Could not start session');
 }
+// Both login and register can return an enrollment challenge — show the shared
+// 2FA setup form and remember the enroll token/secret.
+function beginEnrollment(data){
+  enroll = { enrollToken: data.enrollToken, secret: data.secret };
+  $('#qr').src = data.qrDataUrl;
+  $('#loginForm').classList.add('hidden');
+  $('#registerForm').classList.add('hidden');
+  $('#enrollForm').classList.remove('hidden');
+  $('#sub').textContent = 'One more step';
+  $('#hint').textContent = 'Secret: ' + data.secret;
+}
 
 $('#loginForm').addEventListener('submit', async e => {
   e.preventDefault(); err('');
@@ -807,15 +858,22 @@ $('#loginForm').addEventListener('submit', async e => {
     username: f.username.value, password: f.password.value, totpCode: f.totpCode.value,
   });
   if (data.success && data.token) return setSessionAndGo(data.token);
-  if (data.requiresEnrollment) {
-    enroll = { enrollToken: data.enrollToken, secret: data.secret };
-    $('#qr').src = data.qrDataUrl;
-    $('#loginForm').classList.add('hidden');
-    $('#enrollForm').classList.remove('hidden');
-    $('#hint').textContent = 'Secret: ' + data.secret;
-    return;
-  }
+  if (data.requiresEnrollment) return beginEnrollment(data);
   err(data.error || 'Sign in failed');
+});
+
+$('#registerForm').addEventListener('submit', async e => {
+  e.preventDefault(); err('');
+  const f = e.target;
+  const data = await post('/api/auth/register', {
+    username: f.username.value.trim(),
+    password: f.password.value,
+    email: f.email.value.trim() || undefined,
+    inviteCode: f.inviteCode.value.trim(),
+  });
+  if (data.success && data.token) return setSessionAndGo(data.token);
+  if (data.requiresEnrollment) return beginEnrollment(data);
+  err(data.error || 'Registration failed');
 });
 
 $('#enrollForm').addEventListener('submit', async e => {
@@ -826,6 +884,8 @@ $('#enrollForm').addEventListener('submit', async e => {
   if (data.success && data.token) return setSessionAndGo(data.token);
   err(data.error || 'Enrollment failed');
 });
+
+if (START_REGISTER) showView('register');
 </script>
 </body></html>`);
 });
