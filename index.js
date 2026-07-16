@@ -146,6 +146,13 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
         if (username.length < 3 || username.length > 30) {
             return res.status(400).json({ success: false, error: 'Username must be 3-30 characters' });
         }
+        // Character allowlist — applied at REGISTRATION ONLY, never at login, so
+        // pre-existing accounts (including deliberately odd ones) keep working.
+        // Blocks SQL/HTML payloads, whitespace, unicode lookalikes, and commas
+        // (commas would corrupt the game-server allowedUsers CSV).
+        if (!/^[A-Za-z0-9_.-]+$/.test(username)) {
+            return res.status(400).json({ success: false, error: 'Username may only contain letters, numbers, and . _ -' });
+        }
         const pwError = validatePassword(password);
         if (pwError) return res.status(400).json({ success: false, error: pwError });
         if (!inviteCode) {
