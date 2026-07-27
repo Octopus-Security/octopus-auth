@@ -135,8 +135,8 @@ async function buildEnrollmentResponse(user) {
 
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'octopus-auth' }));
 
-// Bare domain → the sign-in page (otherwise Express 404s with "Cannot GET /").
-app.get('/', (req, res) => res.redirect('/login'));
+// Bare domain is handled by the master-hub route further down: logged in → app
+// grid, otherwise → the central sign-in page.
 
 // ── Register ──────────────────────────────────────────────────────────────────
 app.post('/api/auth/register', authLimiter, async (req, res) => {
