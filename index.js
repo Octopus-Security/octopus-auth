@@ -897,6 +897,119 @@ if (START_REGISTER) showView('register');
 </body></html>`);
 });
 
+// ── Master hub (installable PWA launcher) ────────────────────────────────────
+// auth.octopustechnology.net is where everyone logs in, so it doubles as the
+// home-screen app: install once, log in once, launch every app from one grid.
+// Replaces the retired octopus-mobile-android native app.
+
+const HUB_PUBLIC_URL = process.env.AUTH_PUBLIC_URL || 'https://auth.octopustechnology.net';
+
+// Edit to add / rename / reorder apps (or override wholesale with the HUB_APPS
+// env var as JSON). Each url should be an octopustechnology.net app.
+const HUB_APPS = (() => {
+  try { if (process.env.HUB_APPS) return JSON.parse(process.env.HUB_APPS); } catch { /* fall back to defaults */ }
+  return [
+    { name: 'Budget',    url: 'https://budget.octopustechnology.net',  icon: '💰' },
+    { name: 'Health',    url: 'https://health.octopustechnology.net',  icon: '🩺' },
+    { name: 'Planner',   url: 'https://planner.octopustechnology.net', icon: '📅' },
+    { name: 'Passwords', url: 'https://pass.octopustechnology.net',    icon: '🔑' },
+    { name: 'Media',     url: 'https://media.octopustechnology.net',   icon: '🎬' },
+    { name: 'EDM',       url: 'https://edm.octopustechnology.net',     icon: '🎛️' },
+    { name: 'MMA',       url: 'https://mma.octopustechnology.net',     icon: '🥊' },
+    { name: 'Chat',      url: 'https://chat.octopustechnology.net',    icon: '💬' },
+    { name: 'Notes',     url: 'https://notes.octopustechnology.net',   icon: '📝' },
+    { name: 'Mail',      url: 'https://mail.octopustechnology.net',    icon: '✉️' },
+    { name: 'Tools',     url: 'https://tools.octopustechnology.net',   icon: '🛠️' },
+  ];
+})();
+
+// Icon = the real OctopusTechnology logo on a white rounded square. The logo is a
+// black octopus (needs a light bg to be visible) and maskable icons must fill a
+// square, so we composite it here. Embedded as a data URI → self-contained SVG,
+// no rasteriser needed. Falls back to a drawn mark if the asset is missing.
+const HUB_ICON_SVG = (() => {
+  let logo = null;
+  try { logo = fs.readFileSync(path.join(__dirname, 'assets', 'octopus.png')).toString('base64'); } catch { /* fallback */ }
+  if (logo) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="96" fill="#ffffff"/><image href="data:image/png;base64,${logo}" x="56" y="56" width="400" height="400" preserveAspectRatio="xMidYMid meet"/></svg>`;
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="115" fill="#0e1116"/><path d="M256 138c-73 0-126 51-126 124 0 33 12 55 12 77 0 17-12 25-27 30-11 4-8 19 4 19 30 0 47-16 55-35 6 14 18 24 32 24 13 0 22-11 25-24 3 13 12 24 25 24 14 0 26-10 32-24 8 19 25 35 55 35 12 0 15-15 4-19-15-5-27-13-27-30 0-22 12-44 12-77 0-73-53-124-126-124z" fill="#9d8ff7"/></svg>`;
+})();
+
+function esc(s) { return String(s == null ? '' : s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c])); }
+
+function hubPage(user, nonce) {
+  const tiles = HUB_APPS.map(a =>
+    `<a class="app" href="${esc(a.url)}"><span class="ic">${esc(a.icon)}</span><span class="nm">${esc(a.name)}</span></a>`
+  ).join('');
+  return `<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Octopus</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0e1116">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<style>
+  :root{color-scheme:dark}*{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:#0e1116;color:#e6edf3;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid #20262e}
+  header .logo{font-size:1.35rem}header .title{font-weight:600}
+  header .user{margin-left:auto;color:#8b949e;font-size:.85rem;display:flex;align-items:center;gap:12px}
+  header a.logout{color:#8b949e;text-decoration:none;border:1px solid #30363d;border-radius:8px;padding:5px 10px}
+  main{padding:20px;max-width:1000px;margin:0 auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(116px,1fr));gap:14px}
+  .app{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:#161b22;border:1px solid #30363d;border-radius:16px;padding:22px 12px;text-decoration:none;color:#e6edf3;transition:transform .08s,border-color .12s,background .12s}
+  .app:hover,.app:active{transform:translateY(-2px);border-color:#9d8ff7;background:#1b2130}
+  .app .ic{font-size:2.2rem;line-height:1}.app .nm{font-size:.9rem;font-weight:500}
+</style></head><body>
+<header><span class="logo">🐙</span><span class="title">Octopus</span>
+<span class="user">${esc(user.username)}<a class="logout" href="/logout?redirect=${encodeURIComponent(HUB_PUBLIC_URL + '/')}">Sign out</a></span></header>
+<main><div class="grid">${tiles}</div></main>
+<script nonce="${nonce}">if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(function(){});</script>
+</body></html>`;
+}
+
+// PWA manifest
+app.get('/manifest.webmanifest', (req, res) => {
+  res.type('application/manifest+json').send(JSON.stringify({
+    name: 'OctopusTechnology', short_name: 'Octopus', description: 'Your OctopusTechnology apps',
+    start_url: '/', scope: '/', display: 'standalone',
+    background_color: '#0e1116', theme_color: '#0e1116',
+    icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }],
+  }));
+});
+
+// Icon — SVG is crisp on Android/Chrome, no rasterisation needed
+app.get('/icon.svg', (req, res) => {
+  res.type('image/svg+xml').set('Cache-Control', 'public, max-age=86400').send(HUB_ICON_SVG);
+});
+
+// Minimal service worker (network-only) — makes the hub installable without caching auth state
+app.get('/sw.js', (req, res) => {
+  res.type('application/javascript').send(
+    "self.addEventListener('install',function(e){self.skipWaiting();});" +
+    "self.addEventListener('activate',function(e){self.clients.claim();});" +
+    "self.addEventListener('fetch',function(){});"
+  );
+});
+
+// Gated hub landing: logged in → app grid; otherwise → central login, back here.
+app.get('/', (req, res) => {
+  let user = null;
+  const raw = req.headers.cookie;
+  let token = null;
+  if (raw) for (const part of raw.split(';')) {
+    const i = part.indexOf('=');
+    if (i > -1 && part.slice(0, i).trim() === SSO_COOKIE) { token = decodeURIComponent(part.slice(i + 1).trim()); break; }
+  }
+  try { if (token) { const d = jwt.verify(token, JWT_SECRET); if (!d.purpose) user = d; } } catch { /* invalid → login */ }
+  if (!user) return res.redirect('/login?redirect=' + encodeURIComponent(HUB_PUBLIC_URL + '/'));
+  res.type('html').send(hubPage(user, res.locals.cspNonce));
+});
+
 if (process.env.NODE_ENV === 'production' && JWT_SECRET === 'octopus-shared-secret-change-in-production') {
     console.error('FATAL: JWT_SECRET is unset in production. Refusing to start with the default secret.');
     process.exit(1);
