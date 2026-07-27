@@ -914,7 +914,7 @@ const HUB_APPS = (() => {
   return [
     { name: 'Budget',    url: 'https://budget.octopustechnology.net',  icon: '💰' },
     { name: 'Health',    url: 'https://health.octopustechnology.net',  icon: '🩺' },
-    { name: 'Planner',   url: 'https://planner.octopustechnology.net', icon: '📅' },
+    { name: 'Planner',   url: 'https://plan.octopustechnology.net',    icon: '📅' },
     { name: 'Passwords', url: 'https://pass.octopustechnology.net',    icon: '🔑' },
     { name: 'Media',     url: 'https://media.octopustechnology.net',   icon: '🎬' },
     { name: 'EDM',       url: 'https://edm.octopustechnology.net',     icon: '🎛️' },
