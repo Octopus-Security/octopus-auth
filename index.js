@@ -268,6 +268,13 @@ app.post('/api/auth/verify', async (req, res) => {
         }
         const token = authHeader.substring(7);
         const decoded = jwt.verify(token, JWT_SECRET);
+        // Challenge/enrolment tokens are signed with the same secret but are NOT
+        // sessions (see makeEnrollToken). Every service on the platform trusts
+        // this endpoint's answer, so accepting one here would admit a caller who
+        // supplied a password but never passed 2FA — everywhere at once.
+        if (decoded.purpose) {
+            return res.status(401).json({ success: false, valid: false, error: 'Not a session token' });
+        }
         const user = await User.findByPk(decoded.userId);
         if (!user || !user.isActive) {
             return res.status(401).json({ success: false, valid: false, error: 'User not found or disabled' });
@@ -287,6 +294,12 @@ app.post('/api/auth/refresh', async (req, res) => {
         }
         const token = authHeader.substring(7);
         const decoded = jwt.verify(token, JWT_SECRET);
+        // The sharpest edge of the lot: this hands back a full 7-day session.
+        // Without this check, password -> challenge token -> /refresh yields a
+        // real session in one request and the TOTP code is never needed at all.
+        if (decoded.purpose) {
+            return res.status(401).json({ success: false, error: 'Not a session token' });
+        }
         const user = await User.findByPk(decoded.userId);
         if (!user || !user.isActive) {
             return res.status(401).json({ success: false, error: 'User not found or disabled' });

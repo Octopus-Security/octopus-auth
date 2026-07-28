@@ -10,7 +10,7 @@
   "dependencies": {
     "otplib": "^12.0.1",
     "qrcode": "^1.5.4",
-    "@octopus-security/auth-client": "^1.0.1",
+    "@octopus-security/auth-client": "^1.1.0",
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "bcrypt": "^6.0.0",
