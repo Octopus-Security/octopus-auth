@@ -916,12 +916,13 @@ const HUB_APPS = (() => {
     { name: 'Health',    url: 'https://health.octopustechnology.net',  icon: '🩺' },
     { name: 'Planner',   url: 'https://plan.octopustechnology.net',    icon: '📅' },
     { name: 'Passwords', url: 'https://pass.octopustechnology.net',    icon: '🔑' },
+    { name: 'Messenger', url: 'https://xmpp.octopustechnology.net',    icon: '💬' },
+    { name: 'Cortex',    url: 'https://chat.octopustechnology.net',    icon: '🧠' },
     { name: 'Media',     url: 'https://media.octopustechnology.net',   icon: '🎬' },
     { name: 'EDM',       url: 'https://edm.octopustechnology.net',     icon: '🎛️' },
     { name: 'MMA',       url: 'https://mma.octopustechnology.net',     icon: '🥊' },
-    { name: 'Chat',      url: 'https://chat.octopustechnology.net',    icon: '💬' },
-    { name: 'Notes',     url: 'https://notes.octopustechnology.net',   icon: '📝' },
-    { name: 'Mail',      url: 'https://mail.octopustechnology.net',    icon: '✉️' },
+    { name: 'Games',     url: 'https://games.octopustechnology.net',   icon: '🎮' },
+    { name: 'Math',      url: 'https://math.octopustechnology.net',    icon: '🔢' },
     { name: 'Tools',     url: 'https://tools.octopustechnology.net',   icon: '🛠️' },
   ];
 })();
