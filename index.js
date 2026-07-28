@@ -927,18 +927,25 @@ const HUB_APPS = (() => {
   ];
 })();
 
-// Icon = the real OctopusTechnology logo on a white rounded square. The logo is a
-// black octopus (needs a light bg to be visible) and maskable icons must fill a
-// square, so we composite it here. Embedded as a data URI → self-contained SVG,
-// no rasteriser needed. Falls back to a drawn mark if the asset is missing.
-const HUB_ICON_SVG = (() => {
-  let logo = null;
-  try { logo = fs.readFileSync(path.join(__dirname, 'assets', 'octopus.png')).toString('base64'); } catch { /* fallback */ }
-  if (logo) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="96" fill="#ffffff"/><image href="data:image/png;base64,${logo}" x="56" y="56" width="400" height="400" preserveAspectRatio="xMidYMid meet"/></svg>`;
-  }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="115" fill="#0e1116"/><path d="M256 138c-73 0-126 51-126 124 0 33 12 55 12 77 0 17-12 25-27 30-11 4-8 19 4 19 30 0 47-16 55-35 6 14 18 24 32 24 13 0 22-11 25-24 3 13 12 24 25 24 14 0 26-10 32-24 8 19 25 35 55 35 12 0 15-15 4-19-15-5-27-13-27-30 0-22 12-44 12-77 0-73-53-124-126-124z" fill="#9d8ff7"/></svg>`;
-})();
+// Home-screen icons.
+//
+// These are PNGs, not SVG, because Firefox on Android will not use an
+// SVG-only manifest for an installed icon — it falls back to drawing the site's
+// first letter, which is why the hub showed a plain "A" on the home screen.
+// Chrome accepts SVG, so this only shows up on Firefox.
+//
+// icon-maskable-512 has the artwork inset to 80% on its own background: Android
+// crops maskable icons to a circle/squircle, so a full-bleed image loses its
+// edges. The plain icons stay full-bleed for launchers that don't crop.
+const ICONS = {};
+for (const [route, file] of Object.entries({
+  '/icon-192.png': 'icon-192.png',
+  '/icon-512.png': 'icon-512.png',
+  '/icon-maskable-512.png': 'icon-maskable-512.png',
+})) {
+  try { ICONS[route] = fs.readFileSync(path.join(__dirname, 'assets', file)); }
+  catch { console.warn(`[hub] icon asset missing: ${file}`); }
+}
 
 function esc(s) { return String(s == null ? '' : s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c])); }
 
@@ -954,8 +961,8 @@ function hubPage(user, nonce) {
 <meta name="theme-color" content="#0e1116">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<link rel="icon" href="/icon.svg">
-<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <style>
   :root{color-scheme:dark}*{box-sizing:border-box}
   body{margin:0;min-height:100vh;background:#0e1116;color:#e6edf3;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -982,14 +989,23 @@ app.get('/manifest.webmanifest', (req, res) => {
     name: 'OctopusTechnology', short_name: 'Octopus', description: 'Your OctopusTechnology apps',
     start_url: '/', scope: '/', display: 'standalone',
     background_color: '#0e1116', theme_color: '#0e1116',
-    icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }],
+    icons: [
+      { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+    ],
   }));
 });
 
-// Icon — SVG is crisp on Android/Chrome, no rasterisation needed
-app.get('/icon.svg', (req, res) => {
-  res.type('image/svg+xml').set('Cache-Control', 'public, max-age=86400').send(HUB_ICON_SVG);
-});
+// Icons. Read once at boot; a week of caching because the bytes only change on
+// deploy, and a stale home-screen icon is worse than a slightly cold one.
+for (const route of Object.keys(ICONS)) {
+  app.get(route, (req, res) => {
+    const buf = ICONS[route];
+    if (!buf) return res.status(404).end();
+    res.type('image/png').set('Cache-Control', 'public, max-age=604800').send(buf);
+  });
+}
 
 // Minimal service worker (network-only) — makes the hub installable without caching auth state
 app.get('/sw.js', (req, res) => {
