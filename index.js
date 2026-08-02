@@ -932,6 +932,7 @@ const HUB_APPS = (() => {
     { name: 'Messenger', url: 'https://xmpp.octopustechnology.net',    icon: '💬' },
     { name: 'Cortex',    url: 'https://chat.octopustechnology.net',    icon: '🧠' },
     { name: 'Shopper',   url: 'https://shop.octopustechnology.net',    icon: '🛒' },
+    { name: 'Electronics', url: 'https://ee.octopustechnology.net',    icon: '🎛️' },
     { name: 'Media',     url: 'https://media.octopustechnology.net',   icon: '🎬' },
     { name: 'EDM',       url: 'https://edm.octopustechnology.net',     icon: '🎛️' },
     { name: 'MMA',       url: 'https://mma.octopustechnology.net',     icon: '🥊' },
