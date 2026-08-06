@@ -56,6 +56,44 @@ const authLimiter = rateLimit({
 
 // In-memory failed-login counter (bans persist in SQLite)
 const failedAttempts = new Map();
+
+// How long a ban lasts. It used to be forever, which turned five mistyped
+// attempts into a lockout with no way back except root SSH into the box to
+// delete a row — and that happened, twice in ten minutes, to the person who
+// owns the platform. Brute-force protection does not need to be permanent to
+// work: five tries then a cooling-off period costs an attacker everything and
+// costs you fifteen minutes.
+const BAN_MINUTES = Number(process.env.BAN_MINUTES || 15);
+
+// Never ban an address on the private network or on Tailscale. Traffic from
+// there is already inside the perimeter, and banning it locks the operator out
+// of the machine they would use to undo the ban.
+function isTrustedIP(ip) {
+    const a = String(ip || '').replace(/^::ffff:/, '');
+    if (a === '127.0.0.1' || a === '::1') return true;
+    if (/^10\./.test(a) || /^192\.168\./.test(a)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(a)) return true;
+    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a)) return true;   // CGNAT / Tailscale
+    return false;
+}
+
+/**
+ * Is this IP banned right now?
+ *
+ * Expired bans are deleted as they are found, so the table stays a list of
+ * live bans rather than a growing history nobody prunes.
+ */
+async function activeBan(ip) {
+    const ban = await BannedIP.findOne({ where: { ip } });
+    if (!ban) return null;
+    const ageMinutes = (Date.now() - new Date(ban.bannedAt).getTime()) / 60000;
+    if (ageMinutes >= BAN_MINUTES) {
+        await ban.destroy();
+        console.log(`[auth] ban on ${ip} expired after ${BAN_MINUTES} minutes`);
+        return null;
+    }
+    return { ban, minutesLeft: Math.max(1, Math.ceil(BAN_MINUTES - ageMinutes)) };
+}
 const MAX_FAILURES   = 5;
 
 function getClientIP(req) {
@@ -63,7 +101,13 @@ function getClientIP(req) {
     return (fwd ? fwd.split(',')[0].trim() : req.ip || '').replace('::ffff:', '');
 }
 
-async function recordFailure(ip) {
+async function recordFailure(ip, why) {
+    // Log WHY on the server. The client is told nothing beyond a generic error,
+    // deliberately — but with a permanent ban and no log either, a failing login
+    // was undiagnosable from both ends at once. This is the only place the real
+    // reason exists, and it never leaves the machine.
+    console.warn(`[auth] failed login from ${ip}: ${why}`);
+    if (isTrustedIP(ip)) return false;
     const count = (failedAttempts.get(ip) || 0) + 1;
     failedAttempts.set(ip, count);
     if (count >= MAX_FAILURES) {
@@ -213,9 +257,12 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
         const ip = getClientIP(req);
 
         // IP ban check
-        const ban = await BannedIP.findOne({ where: { ip } });
-        if (ban) {
-            return res.status(403).json({ success: false, error: 'Your IP is banned due to too many failed login attempts.' });
+        const banned = await activeBan(ip);
+        if (banned) {
+            return res.status(403).json({
+                success: false,
+                error: `Too many failed attempts. Try again in ${banned.minutesLeft} minute${banned.minutesLeft === 1 ? '' : 's'}.`,
+            });
         }
 
         if (!username || !password) {
@@ -226,8 +273,11 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
         const passwordOk = user && user.isActive && await bcrypt.compare(password, user.password);
 
         if (!passwordOk) {
-            const nowBanned = await recordFailure(ip);
-            if (nowBanned) return res.status(403).json({ success: false, error: 'Your IP has been banned after too many failed login attempts.' });
+            const nowBanned = await recordFailure(ip,
+                !user ? `no such user "${username}"`
+                      : !user.isActive ? `account "${username}" is inactive`
+                      : `wrong password for "${username}"`);
+            if (nowBanned) return res.status(403).json({ success: false, error: `Too many failed attempts. Try again in ${BAN_MINUTES} minutes.` });
             return res.status(401).json({ success: false, error: GENERIC_AUTH_ERROR });
         }
 
@@ -236,8 +286,11 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
             const codeStr = String(totpCode || '').replace(/\D/g, '');
             const totpOk  = codeStr.length > 0 && authenticator.verify({ token: codeStr, secret: user.totpSecret });
             if (!totpOk) {
-                const nowBanned = await recordFailure(ip);
-                if (nowBanned) return res.status(403).json({ success: false, error: 'Your IP has been banned after too many failed login attempts.' });
+                const nowBanned = await recordFailure(ip,
+                    codeStr.length === 0
+                        ? `password correct for "${username}" but NO 2FA code was submitted`
+                        : `password correct for "${username}" but the 2FA code was wrong (${codeStr.length} digits)`);
+                if (nowBanned) return res.status(403).json({ success: false, error: `Too many failed attempts. Try again in ${BAN_MINUTES} minutes.` });
                 return res.status(401).json({ success: false, error: GENERIC_AUTH_ERROR });
             }
         } else if (REQUIRE_2FA) {

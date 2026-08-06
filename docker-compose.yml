@@ -11,6 +11,8 @@ services:
     ports:
       - "3003:3002"
     environment:
+      # How long an IP ban lasts. Was permanent, which locked the owner out.
+      - BAN_MINUTES=${BAN_MINUTES:-15}
       - NODE_ENV=production
       - JWT_SECRET=${JWT_SECRET:-octopus-shared-secret-change-in-production}
       - PORT=3002
